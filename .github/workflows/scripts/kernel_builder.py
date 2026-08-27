@@ -226,7 +226,10 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             self._run_cmd(f"curl -LSs {LEGACY_FIXES['android13-5.15-below-123']['url']} -o fix.patch && patch -p1 < fix.patch", check=False)
             self._chdir(self.work_dir)
 
-        if av == "android12" and kv == "5.10" and sub and sub < 136:
+        # NOTE: legacy fix assumes an old (deprecated) branch checkout; when
+        # building against the current android12-5.10 branch tip the tree is
+        # already up to date and this patch breaks the build.
+        if False and av == "android12" and kv == "5.10" and sub and sub < 136:
             common_dir = self.work_dir / "common"
             self._chdir(common_dir)
             self._run_cmd(f"curl -LSs {LEGACY_FIXES['android12-5.10-below-136']['url']} | patch -p1", check=False)
