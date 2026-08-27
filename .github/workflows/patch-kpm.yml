@@ -1,0 +1,114 @@
+name: Patch KPM into existing release image
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_asset_base:
+        description: '源镜像基础名 (ShirkNeko v2.2.0)'
+        required: false
+        type: string
+        default: 'android12-5.10.136-2022-11'
+      release_tag:
+        description: '上游 Release tag'
+        required: false
+        type: string
+        default: 'v2.2.0'
+
+env:
+  UPSTREAM_REPO: ShirkNeko/GKI_KernelSU_SUSFS
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+
+      - name: Download upstream artifacts
+        run: |
+          BASE="${{ inputs.release_asset_base || 'android12-5.10.136-2022-11' }}"
+          TAG="${{ inputs.release_tag || 'v2.2.0' }}"
+          mkdir -p work && cd work
+          for f in "$BASE-AnyKernel3.zip" "$BASE-boot.img" "$BASE-boot-gz.img" "$BASE-boot-lz4.img"; do
+            curl -fLSs "https://github.com/${{ env.UPSTREAM_REPO }}/releases/download/$TAG/$f" -o "$f"
+          done
+          ls -la
+
+      - name: Unpack and patch Image with KPM
+        run: |
+          cd work
+          curl -fLSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/main/kpm/patch_linux" -o patch
+          chmod +x patch
+          unzip -o "${{ inputs.release_asset_base || 'android12-5.10.136-2022-11' }}-AnyKernel3.zip" -d ak3
+          cp ak3/Image .
+          ./patch
+          if [ -f oImage ]; then mv oImage Image; fi
+          echo "=== patched size ==="
+          ls -la Image
+
+      - name: Repack AnyKernel3 zip
+        run: |
+          cd work
+          BASE="${{ inputs.release_asset_base || 'android12-5.10.136-2022-11' }}"
+          cp Image ak3/Image
+          (cd ak3 && zip -r "../$BASE-kpm-AnyKernel3.zip" ./*)
+          ls -la *.zip
+
+      - name: Rebuild boot images
+        run: |
+          cd work
+          sudo apt-get install -y lz4
+          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg mkbootimg
+          BASE="${{ inputs.release_asset_base || 'android12-5.10.136-2022-11' }}"
+          # gzip the patched kernel once
+          gzip -n -k -9 -c Image > Image.gz.new
+
+          unpack_bootimg() {
+            python3 mkbootimg/unpack_bootimg.py --boot_img "$1" --out "unp_$2"
+          }
+          # take ramdisk + header args from original boot.img
+          unpack_bootimg "$BASE-boot.img" boot
+          KARGS=$(python3 mkbootimg/unpack_bootimg.py --boot_img "$BASE-boot.img" --out unp_boot | sed -n 's/^\(.*\): \(.*\)$/\1 \2/p')
+          echo "$KARGS"
+
+          CMDLINE=$(echo "$KARGS" | awk '/^command line /{for(i=3;i<=NF;i++)printf "%s ", $i; print ""}')
+          OSVER=$(echo "$KARGS"  | awk '/^os version /{print $3}')
+          OSPATCH=$(echo "$KARGS"| awk '/^os patch level /{print $4}')
+          HDRSZ=$(echo "$KARGS"  | awk '/^header size /{print $3}')
+
+          build_one() {
+            local KERNEL_FILE=$1 OUT=$2
+            python3 mkbootimg/mkbootimg.py \
+              --header_version 4 \
+              --kernel "$KERNEL_FILE" \
+              --ramdisk unp_boot/ramdisk \
+              ${HDRSZ:+--header_size $HDRSZ} \
+              --cmdline "$CMDLINE" \
+              --os_version "$OSVER" --os_patch_level "$OSPATCH" \
+              --output "$OUT"
+            ls -la "$OUT"
+          }
+
+          build_one Image        "$BASE-kpm-boot.img"
+          build_one Image.gz.new "$BASE-kpm-boot-gz.img"
+
+          lz4 -9 -B4 Image Image.lz4.new || lz4 -9 Image Image.lz4.new
+          build_one Image.lz4.new "$BASE-kpm-boot-lz4.img"
+
+      - name: Prepare checksums and upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kpm-patched-images
+          path: |
+            work/*kpm*
+          retention-days: 30

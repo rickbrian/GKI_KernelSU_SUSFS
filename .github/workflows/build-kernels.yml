@@ -24,7 +24,7 @@ on:
         description: '指定 SUSFS commit hash 或相对偏移 (如 HEAD~1)'
         required: false
         type: string
-        default: ''
+        default: '81f01bc58d055687a6276114c1371b8ac09e8b26'
       custom_version:
         description: '自定义版本名称 (可选)'
         required: false
